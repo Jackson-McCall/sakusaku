@@ -52,10 +52,17 @@ LLMManager::LLMManager(const std::string& model_path, int n_gpu_layers)
 	llama_sampler_chain_params sampler_params = llama_sampler_chain_default_params();
 	sampler_ = llama_sampler_chain_init(sampler_params);
 
+	llama_sampler_chain_add(sampler_, llama_sampler_init_penalties(
+		128,   // look back further
+		1.3f,  // more aggressive repeat penalty
+		0.1f,  // small frequency penalty also helps
+		0.0f
+	));
+
 	// Temperature controls randomness.
 	// 0.7 = good balance between coherent and varied output.
 	// Lower (0.1) = more deterministic. Higher (1.0+) = more creative.
-	llama_sampler_chain_add(sampler_, llama_sampler_init_temp(0.7f));
+	llama_sampler_chain_add(sampler_, llama_sampler_init_temp(0.1f));
 
 	// Greedy sampling picks the highest probability token after temperature.
 	llama_sampler_chain_add(sampler_, llama_sampler_init_greedy());
@@ -72,21 +79,19 @@ LLMManager::~LLMManager() {
 }
 
 std::string LLMManager::BuildPrompt(const RawData& article) {
-	// [INST] format is the standard instruct template for Llama models.
-	// Adjust the instructions to whatever analysis you want.
-	return "[INST] You are a financial analyst. Analyze the following article and provide:\n"
-		"1. A summary that contains all relevant details for financial analysis, without the extra fluff\n"
-		"2. Overall sentiment (bullish/bearish/neutral)\n"
-		"3. Key tickers or companies mentioned\n"
-		"4. Any notable risks or opportunities\n\n"
-		"Title: " + article.title + "\n\n"
-		"Article:\n" + article.body + " [/INST]";
+	return "You are a financial editor. Strip fluff, preserve facts.\n\n"
+		"Respond ONLY with the following three lines. No preamble, no explanation, nothing else:\n\n"
+		"[Article Title] : " + article.title + "\n"
+		"[Stocks Involved] : <comma delimited ticker symbols only, or NONE if no tickers mentioned>\n"
+		"[No-Fluff Article] : <the article rewritten with zero fluff, every financial fact preserved, "
+		"maximum 3 paragraphs, no commentary>\n\n"
+		"Article:\n" + article.body;
 }
 
 std::string LLMManager::RunInference(const std::string& prompt) {
 	// Tokenize — convert the text string into integer token IDs the model understands.
 	// We allocate a buffer large enough for the full context window.
-	const int max_tokens = 4096;
+	const int max_tokens = 16384;
 	std::vector<llama_token> tokens(max_tokens);
 
     // llama_tokenize converts text to token IDs.
@@ -129,7 +134,7 @@ std::string LLMManager::RunInference(const std::string& prompt) {
 	// Generation loop — generate one token at a time until end-of-sequence
 	// or we hit the max output length.
 	std::string output;
-	const int max_new_tokens = 512;
+	const int max_new_tokens = 4096;
 
 	for (int i = 0; i < max_new_tokens; i++) {
 		// Sample the next token using our sampler chain
